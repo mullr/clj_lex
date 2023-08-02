@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
-use logos::{Logos, Lexer, Skip};
+use std::{fs, error::Error};
+
+use logos::{Lexer, Logos, Skip, Span};
+
+type LexError = (String, Span);
 
 #[derive(Debug, PartialEq, Default)]
 struct Context {
@@ -8,147 +12,215 @@ struct Context {
     column: usize,
 }
 
+#[derive(Debug, PartialEq)]
+struct Loc {
+    line: usize,
+    column: usize,
+    value: String,
+}
+
+impl Default for Loc {
+    fn default() -> Self {
+        Loc {
+            line: 1,
+            column: 1,
+            value: "".to_owned(),
+        }
+    }
+}
+
 fn newline_callback(lex: &mut Lexer<Token>) -> Skip {
     lex.extras.line += 1;
     lex.extras.column = lex.span().end;
-    println!("newline cb: {:?}", lex.extras);
     Skip
 }
 
-fn string_callback(lex: &mut Lexer<Token>) -> () {
-    println!("context: {:?}", lex.extras);
+fn string_callback(lex: &mut Lexer<Token>) -> Loc {
     let lines = lex.slice().lines();
     let newline_count = lines.clone().count();
-    lex.extras.line += newline_count;
-    lex.extras.column = lines.last().unwrap_or("").chars().count();
-    println!("context: {:?}", lex.extras);
+    let start_line = lex.extras.line;
+    let start_column = lex.extras.column;
+    lex.extras.line += newline_count - 1;
+    lex.extras.column = lex.span().end;
+    Loc {
+        line: start_line,
+        column: start_column,
+        value: lex.slice().to_owned(),
+    }
 }
 
-fn attach_loc(lex: &mut Lexer<Token>) {
-    lex.extras.column = lex.span().end;
+fn symbol_validator(lex: &mut Lexer<Token>) -> Option<Loc> {
+    let slice = lex.slice();
+    if slice.ends_with('/') || slice.matches('/').count() > 1 {
+        None
+    } else {
+        Some(Loc {
+            line: lex.extras.line,
+            column: lex.span().start - lex.extras.column,
+            value: slice.to_string(),
+        })
+    }
+}
+
+fn attach_loc(lex: &mut Lexer<Token>) -> Loc {
+    Loc {
+        line: lex.extras.line,
+        column: lex.span().start - lex.extras.column,
+        value: lex.slice().to_string(),
+    }
 }
 
 #[derive(Logos, Debug, PartialEq)]
+#[logos(error = LexError)]
 #[logos(extras = Context)]
 enum Token {
     Error,
 
-    #[regex(r"[\r\n]+", newline_callback)]
+    #[regex(r"\r", |_| Skip)]
+    #[regex(r"\n", newline_callback)]
     Newline,
 
     #[regex(r"[ \t\f,]+", |_| Skip)]
     Whitespace,
 
-    #[token("(")]
-    OpenParen,
+    #[token("(", attach_loc)]
+    OpenParen(Loc),
 
-    #[token(")")]
-    CloseParen,
+    #[token(")", attach_loc)]
+    CloseParen(Loc),
 
-    #[token("{")]
-    OpenCurly,
+    #[token("{", attach_loc)]
+    OpenCurly(Loc),
 
-    #[token("}")]
-    CloseCurly,
+    #[token("}", attach_loc)]
+    CloseCurly(Loc),
 
-    #[token("[")]
-    OpenSquare,
+    #[token("[", attach_loc)]
+    OpenSquare(Loc),
 
-    #[token("]")]
-    CloseSquare,
+    #[token("]", attach_loc)]
+    CloseSquare(Loc),
 
-    #[token("nil")]
-    Nil,
+    #[token("nil", attach_loc)]
+    Nil(Loc),
 
-    #[token("false", |_| false)]
-    #[token("true", |_| true)]
-    Boolean(bool),
+    #[token("false", attach_loc)]
+    #[token("true", attach_loc)]
+    Boolean(Loc),
 
-    #[token("'")]
-    Quote,
+    #[regex(r#"\\."#, attach_loc)]
+    Char(Loc),
 
-    #[token("`")]
-    SyntaxQuote,
+    #[token("'", attach_loc)]
+    Quote(Loc),
 
-    #[token("~")]
-    Unquote,
+    #[token("`", attach_loc)]
+    SyntaxQuote(Loc),
 
-    #[token("~@")]
-    UnquoteSplicing,
+    #[token("~", attach_loc)]
+    Unquote(Loc),
 
-    #[token("^")]
-    #[token("#^")]
-    Meta,
+    #[token("~@", attach_loc)]
+    UnquoteSplicing(Loc),
 
-    #[token("@")]
-    Deref,
+    #[token("^", attach_loc)]
+    #[token("#^", attach_loc)]
+    Meta(Loc),
 
-    #[token("#'")]
-    Var,
+    #[token("@", attach_loc)]
+    Deref(Loc),
 
-    #[token("#(")]
-    Fn,
+    #[token("#'", attach_loc)]
+    Var(Loc),
 
-    #[token("#:")]
-    NamespacedMap,
+    #[token("#(", attach_loc)]
+    Fn(Loc),
 
-    #[token("#=")]
-    Eval,
+    #[regex(r"%\d*", attach_loc)]
+    FnArg(Loc),
 
-    #[token("#?")]
-    ReaderConditional,
+    #[token("#:", attach_loc)]
+    NamespacedMap(Loc),
 
-    #[token("#\"")]
-    Regex,
+    #[token("#=", attach_loc)]
+    Eval(Loc),
 
-    #[token("#_")]
-    Discard,
+    #[token("#?", attach_loc)]
+    ReaderConditional(Loc),
 
-    #[token("#{")]
-    Set,
+    #[token("#\"", attach_loc)]
+    Regex(Loc),
 
-    #[regex("#![^\r\n]*")]
-    #[regex(";[^\r\n]*")]
-    Comment,
+    #[token("#_", attach_loc)]
+    Discard(Loc),
 
-    #[regex("([-+]?)(?:(0)|([1-9][0-9]*)|0[xX]([0-9A-Fa-f]+)|0([0-7]+)|([1-9][0-9]?)[rR]([0-9A-Za-z]+)|0[0-9]+)(N)?")]
-    Integer,
+    #[token("#{", attach_loc)]
+    Set(Loc),
 
-    #[regex("[-+]?[0-9]+/[0-9]+")]
-    Ratio,
+    #[regex("#![^\r\n]*", attach_loc)]
+    #[regex(";[^\r\n]*", attach_loc)]
+    Comment(Loc),
 
-    #[regex("[-+]?[0-9]+M")]
-    #[regex("[-+]?[0-9]+\\.[0-9]*M?")]
-    #[regex("[-+]?[0-9]+(\\.[0-9]*)?[eE][-+]?[0-9]+M?")]
-    Decimal,
+    #[regex("([-+]?)(?:(0)|([1-9][0-9]*)|0[xX]([0-9A-Fa-f]+)|0([0-7]+)|([1-9][0-9]?)[rR]([0-9A-Za-z]+)|0[0-9]+)(N)?", attach_loc, priority=2)]
+    Integer(Loc),
 
-    #[token("##Inf")]
-    #[token("##-Inf")]
-    Inf,
+    #[regex("[-+]?[0-9]+/[0-9]+", attach_loc)]
+    Ratio(Loc),
 
-    #[token("##NaN")]
-    NaN,
+    #[regex("[-+]?[0-9]+M", attach_loc)]
+    #[regex("[-+]?[0-9]+\\.[0-9]*M?", attach_loc)]
+    #[regex("[-+]?[0-9]+(\\.[0-9]*)?[eE][-+]?[0-9]+M?", attach_loc)]
+    Decimal(Loc),
 
-    #[regex(r#"([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])+"#, symbol_validator)]
-    #[regex(r#"([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])+/([\D&&[^ \t\r\n\f,#'%";@\^`~()\[\]{}\\]]*)?"#, symbol_validator)]
-    Symbol,
+    #[token("##Inf", attach_loc)]
+    #[token("##-Inf", attach_loc)]
+    Inf(Loc),
 
-    #[regex(r#"::?([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])+"#, symbol_validator)]
-    #[regex(r#"::?([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])+/([\D&&[^ \t\r\n\f,#'%";@\^`~()\[\]{}\\]]*)?"#, symbol_validator)]
-    Keyword,
+    #[token("##NaN", attach_loc)]
+    NaN(Loc),
+
+    #[token("/", attach_loc)]
+    #[regex(r#"([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]*#?"#, symbol_validator)]
+    #[regex(r#"([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]*/([\D&&[^ \t\r\n\f,#'%";@\^`~()\[\]{}\\]][^ \t\r\n\f,#'%";@\^`~()\[\]{}\\]*)?#?"#, symbol_validator)]
+    Symbol(Loc),
+
+    #[token("::?/", attach_loc)]
+    #[regex(r#"::?([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]*"#, symbol_validator)]
+    #[regex(r#"::?([\D&&[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]])[^ \t\r\n\f,/#'%";@\^`~()\[\]{}\\]*/([\D&&[^ \t\r\n\f,#'%";@\^`~()\[\]{}\\]][^ \t\r\n\f,#'%";@\^`~()\[\]{}\\]*)?"#, symbol_validator)]
+    Keyword(Loc),
 
     #[regex(r#""([^"\\]|\\["\\bnfrt]|u[a-fA-F0-9]{4})*""#, string_callback)]
-    String,
+    String(Loc),
 }
 
-fn symbol_validator(lex: &mut Lexer<Token>) -> bool {
-    let slice = lex.slice();
-    println!("{:?}", slice);
-    !(slice.ends_with('/') || slice.matches('/').count() > 1)
-}
+fn main() -> Result<(), Box<dyn Error>> {
+    let core_clj: String = fs::read_to_string("core.clj")?.parse()?;
+    let start = std::time::Instant::now();
+    let lex = Token::lexer(&core_clj);
+    let duration = start.elapsed();
+    println!("how long: {:?}", duration);
 
-fn main() {
-    let lex = Token::lexer("sdf \"asdf \n asdf\r\n\r\n\"asdf\n");
-    for token in lex {
-    }
+    let lex = Token::lexer(r#""The version info for Clojure core, as a map containing :major :minor :incremental and :qualifier keys. Feature releases may increment :minor and/or :major, bugfix releases will increment :incremental. Possible values of :qualifier include \"GA\", \"SNAPSHOT\", \"RC-x\" \"BETA-x\""#);
+    println!("{:?}", lex.collect::<Vec<_>>());
+
+    // let mut tokens = Vec::new();
+    // let mut errors = Vec::new();
+    // for result in lex {
+    //     match result {
+    //         Ok(token) => {
+    //             tokens.push(token);
+    //         }
+    //         Err(e) => {
+    //             println!("{:?}", tokens.iter().rev().take(10).rev().collect::<Vec<_>>());
+    //             errors.push(e);
+    //         }
+    //     }
+    // }
+    // if errors.is_empty() {
+    //     println!("Good job")
+    // } else {
+    //     println!("{:?}", Err::<(), Vec<(String, Span)>>(errors))
+    // }
+
+    Ok(())
 }
