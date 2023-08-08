@@ -11,5 +11,16 @@ edition = "2021"
 
 [dependencies]
 ariadne = "0.3.0"
+bumpalo = { version = "3.13.0", features = ["collections"] }
 chumsky = "1.0.0-alpha.4"
 logos = "0.13.0"
+
+[dev-dependencies]
+criterion = "0.4"
+
+[lib]
+bench = false
+
+[[bench]]
+name = "parse_core_clj"
+harness = false
