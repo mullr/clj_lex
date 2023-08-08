@@ -7,9 +7,7 @@
 mod hand;
 mod lexer;
 
-use ariadne::{Color, Label, Report, ReportKind, Source};
-use chumsky::input::Stream;
-use chumsky::prelude::*;
+use bumpalo::{collections::Vec, Bump};
 use logos::Logos;
 use std::{error::Error, fs};
 
@@ -17,14 +15,22 @@ use hand::{parse, TokenSpan};
 pub use hand::{Node, ParseError};
 use lexer::Token;
 
-pub fn parse_clj(source: &str) -> Result<Vec<Node>, ParseError> {
-    let tokens = Token::lexer(source)
-        .spanned()
-        .map::<TokenSpan, _>(|(tok, span)| match tok {
-            Ok(tok) => (tok, span.into()),
-            Err(()) => (Token::Error, span.into()),
-        })
-        .collect::<Vec<_>>();
+pub fn parse_clj<'source, 'arena>(
+    source: &'source str,
+    arena: &'arena Bump,
+) -> Result<Vec<'arena, &'arena mut Node<'arena>>, ParseError>
+where
+    'source: 'arena,
+{
+    let estimated_capacity = source.len() / 3; // This is a guess...
+    let mut tokens = Vec::with_capacity_in(estimated_capacity, arena);
 
-    parse(tokens)
+    for (tok, span) in Token::lexer(source).spanned() {
+        match tok {
+            Ok(tok) => tokens.push((tok, span.into())),
+            Err(()) => tokens.push((Token::Error, span.into())),
+        }
+    }
+
+    parse(tokens, arena)
 }

@@ -6,6 +6,7 @@
 
 use std::{fmt, iter::Peekable, ops::Range, slice::Iter};
 
+use bumpalo::{collections::Vec, vec, Bump};
 use logos::Span;
 
 use crate::lexer::Token;
@@ -41,77 +42,77 @@ impl From<&Range<usize>> for TextSpan {
 }
 
 #[derive(Debug, Clone)]
-pub struct Nil {
+pub struct Nil<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Boolean {
+pub struct Boolean<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub value: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct Char {
+pub struct Char<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub value: char,
 }
 
 #[derive(Debug, Clone)]
-pub struct Integer {
+pub struct Integer<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub value: isize,
 }
 
 #[derive(Debug, Clone)]
-pub struct Ratio {
+pub struct Ratio<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub numerator: isize,
     pub denominator: isize,
 }
 
 #[derive(Debug, Clone)]
-pub struct Decimal {
+pub struct Decimal<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub value: f64,
 }
 
 #[derive(Debug, Clone)]
-pub enum Number {
-    Integer(Integer),
-    Ratio(Ratio),
-    Decimal(Decimal),
+pub enum Number<'a> {
+    Integer(&'a Integer<'a>),
+    Ratio(&'a Ratio<'a>),
+    Decimal(&'a Decimal<'a>),
 }
 
 #[derive(Debug, Clone)]
-pub struct Symbol {
+pub struct Symbol<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub ns: Option<String>,
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Keyword {
+pub struct Keyword<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub ns: Option<String>,
     pub name: String,
 }
 
-impl PartialEq for Keyword {
+impl<'a> PartialEq for Keyword<'a> {
     fn eq(&self, other: &Self) -> bool {
         self.ns == other.ns && self.name == other.name
     }
 }
 
-impl fmt::Display for Keyword {
+impl<'a> fmt::Display for Keyword<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.ns {
             Some(ns) => write!(f, ":{}/{}", ns, self.name),
@@ -121,62 +122,63 @@ impl fmt::Display for Keyword {
 }
 
 #[derive(Debug, Clone)]
-pub struct CljString {
+pub struct CljString<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub value: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct Regex {
+pub struct Regex<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
+    pub meta: Option<&'a Node<'a>>,
     pub value: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct List {
+pub struct List<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
-    pub value: Vec<Node>,
+    pub meta: Option<&'a Node<'a>>,
+    // TODO i'm not sure we really want vecs of refs here... seems like unnecessary indirection.
+    pub value: Vec<'a, &'a Node<'a>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Vector {
+pub struct Vector<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
-    pub value: Vec<Node>,
+    pub meta: Option<&'a Node<'a>>,
+    pub value: Vec<'a, &'a Node<'a>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Map {
+pub struct Map<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
-    pub value: Vec<Node>,
+    pub meta: Option<&'a Node<'a>>,
+    pub value: Vec<'a, &'a Node<'a>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Set {
+pub struct Set<'a> {
     pub span: TextSpan,
-    pub meta: Option<Box<Node>>,
-    pub value: Vec<Node>,
+    pub meta: Option<&'a Node<'a>>,
+    pub value: Vec<'a, &'a Node<'a>>,
 }
 
-#[derive(Debug, Clone)]
-pub enum Node {
-    Nil(Nil),
-    Boolean(Boolean),
-    Char(Char),
-    Number(Number),
-    Symbol(Symbol),
-    Keyword(Keyword),
-    CljString(CljString),
-    Regex(Regex),
+#[derive(Debug)]
+pub enum Node<'a> {
+    Nil(&'a Nil<'a>),
+    Boolean(&'a Boolean<'a>),
+    Char(&'a Char<'a>),
+    Number(&'a Number<'a>),
+    Symbol(&'a mut Symbol<'a>),
+    Keyword(&'a Keyword<'a>),
+    CljString(&'a CljString<'a>),
+    Regex(&'a Regex<'a>),
 
-    List(List),
-    Vector(Vector),
-    Map(Map),
-    Set(Set),
+    List(&'a mut List<'a>),
+    Vector(&'a mut Vector<'a>),
+    Map(&'a mut Map<'a>),
+    Set(&'a mut Set<'a>),
 
     Delimiter(TextSpan),
     Eof,
@@ -208,126 +210,147 @@ const VAR: &str = "splint/var";
 const TAG: &str = "tag";
 const TAGGED_LITERAL: &str = "splint/tagged-literal";
 
-impl Node {
+impl<'a> Node<'a> {
     #[inline]
-    pub fn nil(span: TextSpan) -> Self {
-        Self::Nil(Nil { span, meta: None })
+    pub fn nil(arena: &'a Bump, span: TextSpan) -> &'a mut Self {
+        arena.alloc(Self::Nil(arena.alloc(Nil { span, meta: None })))
     }
 
     #[inline]
-    pub fn boolean(span: TextSpan, value: bool) -> Self {
-        Self::Boolean(Boolean {
+    pub fn boolean(arena: &'a Bump, span: TextSpan, value: bool) -> &'a mut Self {
+        arena.alloc(Self::Boolean(arena.alloc(Boolean {
             span,
             meta: None,
             value,
-        })
+        })))
     }
 
     #[inline]
-    pub fn char(span: TextSpan, value: char) -> Self {
-        Self::Char(Char {
+    pub fn char(arena: &'a Bump, span: TextSpan, value: char) -> &'a mut Self {
+        arena.alloc(Self::Char(arena.alloc(Char {
             span,
             meta: None,
             value,
-        })
+        })))
     }
 
     #[inline]
-    pub fn integer(span: TextSpan, value: isize) -> Self {
-        Self::Number(Number::Integer(Integer {
+    pub fn integer(arena: &'a Bump, span: TextSpan, value: isize) -> &'a mut Self {
+        arena.alloc(Self::Number(arena.alloc(Number::Integer(arena.alloc(
+            Integer {
+                span,
+                meta: None,
+                value,
+            },
+        )))))
+    }
+
+    #[inline]
+    pub fn ratio(
+        arena: &'a Bump,
+        span: TextSpan,
+        numerator: isize,
+        denominator: isize,
+    ) -> &'a mut Self {
+        arena.alloc(Self::Number(arena.alloc(Number::Ratio(arena.alloc(
+            Ratio {
+                span,
+                meta: None,
+                numerator,
+                denominator,
+            },
+        )))))
+    }
+
+    #[inline]
+    pub fn decimal(arena: &'a Bump, span: TextSpan, value: f64) -> &'a mut Self {
+        arena.alloc(Self::Number(arena.alloc(Number::Decimal(arena.alloc(
+            Decimal {
+                span,
+                meta: None,
+                value,
+            },
+        )))))
+    }
+
+    #[inline]
+    pub fn string(arena: &'a Bump, span: TextSpan, value: String) -> &'a mut Self {
+        arena.alloc(Self::CljString(arena.alloc(CljString {
             span,
             meta: None,
             value,
-        }))
+        })))
     }
 
     #[inline]
-    pub fn ratio(span: TextSpan, numerator: isize, denominator: isize) -> Self {
-        Self::Number(Number::Ratio(Ratio {
-            span,
-            meta: None,
-            numerator,
-            denominator,
-        }))
-    }
-
-    #[inline]
-    pub fn decimal(span: TextSpan, value: f64) -> Self {
-        Self::Number(Number::Decimal(Decimal {
-            span,
-            meta: None,
-            value,
-        }))
-    }
-
-    #[inline]
-    pub fn string(span: TextSpan, value: String) -> Self {
-        Self::CljString(CljString {
-            span,
-            meta: None,
-            value,
-        })
-    }
-
-    #[inline]
-    pub fn symbol(span: TextSpan, ns: Option<String>, name: String) -> Self {
-        Self::Symbol(Symbol {
+    pub fn symbol(
+        arena: &'a Bump,
+        span: TextSpan,
+        ns: Option<String>,
+        name: String,
+    ) -> &'a mut Self {
+        arena.alloc(Self::Symbol(arena.alloc(Symbol {
             span,
             meta: None,
             ns,
             name,
-        })
+        })))
     }
 
     #[inline]
-    pub fn keyword(span: TextSpan, ns: Option<String>, name: String) -> Self {
-        Self::Keyword(Keyword {
+    pub fn keyword(
+        arena: &'a Bump,
+        span: TextSpan,
+        ns: Option<String>,
+        name: String,
+    ) -> &'a mut Self {
+        arena.alloc(Self::Keyword(arena.alloc(Keyword {
             span,
             meta: None,
             ns,
             name,
-        })
+        })))
     }
 
     #[inline]
-    pub fn list(span: TextSpan, value: Vec<Node>) -> Self {
-        Self::List(List {
+    pub fn list(arena: &'a Bump, span: TextSpan, value: Vec<'a, &'a Node<'a>>) -> &'a mut Self {
+        arena.alloc(Self::List(arena.alloc(List {
             span,
             meta: None,
             value,
-        })
+        })))
     }
 
     #[inline]
-    pub fn map(span: TextSpan, value: Vec<Node>) -> Self {
-        Self::Map(Map {
+    pub fn map(arena: &'a Bump, span: TextSpan, value: Vec<'a, &'a Node<'a>>) -> &'a mut Self {
+        arena.alloc(Self::Map(arena.alloc(Map {
             span,
             meta: None,
             value,
-        })
+        })))
     }
 
     #[inline]
-    pub fn set(span: TextSpan, value: Vec<Node>) -> Self {
-        Self::Set(Set {
+    pub fn set(arena: &'a Bump, span: TextSpan, value: Vec<'a, &'a Node<'a>>) -> &'a mut Self {
+        arena.alloc(Self::Set(arena.alloc(Set {
             span,
             meta: None,
             value,
-        })
+        })))
     }
 }
 
 pub type TokenSpan<'source> = (Token<'source>, TextSpan);
 
 #[derive(Debug, Clone)]
-pub struct Cursor<'source> {
+pub struct Cursor<'source, 'a> {
     position: usize,
-    tokens: Vec<TokenSpan<'source>>,
+    tokens: Vec<'a, TokenSpan<'source>>,
     expected_delimiter: Option<Token<'source>>,
 }
 
-impl<'source> Cursor<'source> {
-    pub fn new(tokens: Vec<TokenSpan<'source>>) -> Self {
+impl<'source, 'a> Cursor<'source, 'a> {
+    pub fn new(tokens: Vec<'a, TokenSpan<'source>>) -> Self {
         Self {
             position: 0,
             tokens,
@@ -359,22 +382,33 @@ impl<'source> Cursor<'source> {
         None
     }
 
-    pub fn read_ratio(&self, i: String, text_span: TextSpan) -> Result<Node, ParseError> {
+    pub fn read_ratio(
+        &self,
+        arena: &'a Bump,
+        i: String,
+        text_span: TextSpan,
+    ) -> Result<&'a mut Node<'a>, ParseError> {
         if let Some((n, d)) = i.split_once('/') {
             let numerator = (*n).parse::<_>().unwrap_or(0);
             let denominator = (*d).parse::<_>().unwrap_or(0);
-            Ok(Node::ratio(text_span, numerator, denominator))
+            Ok(Node::ratio(arena, text_span, numerator, denominator))
         } else {
             Err(ParseError::InvalidNumber(text_span, i.to_string()))
         }
     }
 
-    pub fn read_symbol(&self, s: String, text_span: TextSpan) -> Result<Node, ParseError> {
+    pub fn read_symbol(
+        &self,
+        arena: &'a Bump,
+        s: String,
+        text_span: TextSpan,
+    ) -> Result<&'a mut Node<'a>, ParseError> {
         if s.starts_with('/') && s.len() > 1 {
             Err(ParseError::InvalidSymbol(text_span, s))
         } else if s != "/" && s.contains('/') {
             if let Some((ns, name)) = s.split_once('/') {
                 Ok(Node::symbol(
+                    arena,
                     text_span,
                     Some(ns.to_string()),
                     name.to_string(),
@@ -383,11 +417,16 @@ impl<'source> Cursor<'source> {
                 Err(ParseError::InvalidSymbol(text_span, s))
             }
         } else {
-            Ok(Node::symbol(text_span, None, s.to_string()))
+            Ok(Node::symbol(arena, text_span, None, s.to_string()))
         }
     }
 
-    pub fn read_keyword(&self, s: String, text_span: TextSpan) -> Result<Node, ParseError> {
+    pub fn read_keyword(
+        &self,
+        arena: &'a Bump,
+        s: String,
+        text_span: TextSpan,
+    ) -> Result<&'a Node<'a>, ParseError> {
         let auto_resolve = s.starts_with("::");
         let stripped = if auto_resolve {
             s.strip_prefix("::").unwrap()
@@ -400,6 +439,7 @@ impl<'source> Cursor<'source> {
         } else if stripped != "/" && stripped.contains('/') {
             if let Some((ns, name)) = stripped.split_once('/') {
                 Ok(Node::keyword(
+                    arena,
                     text_span,
                     Some(ns.to_string()),
                     name.to_string(),
@@ -408,49 +448,60 @@ impl<'source> Cursor<'source> {
                 Err(ParseError::InvalidKeyword(text_span, stripped.to_string()))
             }
         } else {
-            Ok(Node::keyword(text_span, None, stripped.to_string()))
+            Ok(Node::keyword(arena, text_span, None, stripped.to_string()))
         }
     }
 
-    pub fn read_list(&mut self, init_span: TextSpan) -> Result<(TextSpan, Vec<Node>), ParseError> {
+    pub fn read_list(
+        &mut self,
+
+        arena: &'a Bump,
+        init_span: TextSpan,
+    ) -> Result<(TextSpan, Vec<'a, &'a Node<'a>>), ParseError> {
         let mut span = init_span;
-        let mut nodes = vec![];
+        let mut nodes = Vec::new_in(arena);
         loop {
-            match self.next_node() {
+            match self.next_node(arena) {
                 Ok(Node::Delimiter(text_span)) => {
                     span.end = text_span.end;
                     break;
                 }
-                Ok(node) => nodes.push(node),
+                Ok(node) => nodes.push(node as &_),
                 Err(e) => return Err(e),
             }
         }
         Ok((span, nodes))
     }
 
-    pub fn read_meta(&mut self, text_span: TextSpan) -> Result<Node, ParseError> {
-        match self.next_node() {
+    pub fn read_meta(
+        &mut self,
+        arena: &'a Bump,
+        text_span: TextSpan,
+    ) -> Result<&'a mut Node<'a>, ParseError> {
+        match self.next_node(arena) {
             Ok(Node::Eof) => Err(ParseError::UnexpectedEOF(text_span, String::from("^"))),
-            Ok(Node::Delimiter(ts)) => Err(ParseError::UnexpectedDelimiter(ts, String::from("^"))),
-            Ok(meta_node) => match self.next_node() {
+            Ok(Node::Delimiter(ts)) => Err(ParseError::UnexpectedDelimiter(*ts, String::from("^"))),
+            Ok(meta_node) => match self.next_node(arena) {
                 Ok(Node::Eof) => Err(ParseError::UnexpectedEOF(text_span, String::from("^"))),
                 Ok(node) => {
-                    let desugared = match meta_node {
+                    let desugared: &'a mut Node<'a> = match meta_node {
                         Node::Keyword(k) => {
                             let span = k.span;
                             let m = Map {
                                 span,
                                 meta: None,
                                 value: vec![
-                                    Node::Keyword(k.clone()),
-                                    Node::Boolean(Boolean {
-                                        span,
-                                        meta: None,
-                                        value: true,
-                                    }),
+                                    in arena;
+                                    arena.alloc(Node::Keyword(k)) as &_,
+                                    arena.alloc(Node::Boolean(arena.alloc(
+                                        Boolean {
+                                            span,
+                                            meta: None,
+                                            value: true,
+                                        }))),
                                 ],
                             };
-                            Node::Map(m)
+                            arena.alloc(Node::Map(arena.alloc(m)))
                         }
                         Node::Symbol(s) => {
                             let span = s.span;
@@ -458,11 +509,12 @@ impl<'source> Cursor<'source> {
                                 span,
                                 meta: None,
                                 value: vec![
-                                    Node::keyword(text_span, None, TAG.to_string()),
-                                    Node::Symbol(s.clone()),
+                                    in arena;
+                                    Node::keyword(arena, text_span, None, TAG.to_string()) as &_,
+                                    arena.alloc(Node::Symbol(arena.alloc(s.clone()))),
                                 ],
                             };
-                            Node::Map(m)
+                            arena.alloc(Node::Map(arena.alloc(m)))
                         }
                         Node::CljString(s) => {
                             let span = s.span;
@@ -470,15 +522,17 @@ impl<'source> Cursor<'source> {
                                 span,
                                 meta: None,
                                 value: vec![
-                                    Node::keyword(text_span, None, TAG.to_string()),
-                                    Node::CljString(s.clone()),
+                                    in arena;
+                                    Node::keyword(arena, text_span, None, TAG.to_string()) as &_,
+                                    arena.alloc(Node::CljString(s)),
                                 ],
                             };
-                            Node::Map(m)
+                            arena.alloc(Node::Map(arena.alloc(m)))
                         }
                         m @ Node::Map(_) => m,
                         _ => return Err(ParseError::InvalidMetaToken(text_span, String::from(""))),
                     };
+                    let node: &'a mut Node<'a> = node;
                     match node {
                         Node::Nil(_)
                         | Node::Boolean(_)
@@ -489,25 +543,25 @@ impl<'source> Cursor<'source> {
                         | Node::Regex(_) => {
                             Err(ParseError::InvalidMetaTarget(text_span, String::from("")))
                         }
-                        Node::Symbol(mut c) => {
-                            c.meta = Some(Box::new(desugared));
-                            Ok(Node::Symbol(c))
+                        Node::Symbol(c) => {
+                            c.meta = Some(desugared);
+                            Ok(arena.alloc(Node::Symbol(c)))
                         }
-                        Node::List(mut c) => {
-                            c.meta = Some(Box::new(desugared));
-                            Ok(Node::List(c))
+                        Node::List(c) => {
+                            c.meta = Some(desugared);
+                            Ok(arena.alloc(Node::List(c)))
                         }
-                        Node::Vector(mut c) => {
-                            c.meta = Some(Box::new(desugared));
-                            Ok(Node::Vector(c))
+                        Node::Vector(c) => {
+                            c.meta = Some(desugared);
+                            Ok(arena.alloc(Node::Vector(c)))
                         }
-                        Node::Map(mut c) => {
-                            c.meta = Some(Box::new(desugared));
-                            Ok(Node::Map(c))
+                        Node::Map(c) => {
+                            c.meta = Some(desugared);
+                            Ok(arena.alloc(Node::Map(c)))
                         }
-                        Node::Set(mut c) => {
-                            c.meta = Some(Box::new(desugared));
-                            Ok(Node::Set(c))
+                        Node::Set(c) => {
+                            c.meta = Some(desugared);
+                            Ok(arena.alloc(Node::Set(c)))
                         }
                         _ => Err(ParseError::InvalidToken(
                             text_span,
@@ -523,29 +577,40 @@ impl<'source> Cursor<'source> {
 
     pub fn read_wrapper(
         &mut self,
+        arena: &'a Bump,
         text_span: TextSpan,
         symbol: String,
-    ) -> Result<Node, ParseError> {
-        match self.next_node() {
+    ) -> Result<&'a mut Node<'a>, ParseError> {
+        match self.next_node(arena) {
             Ok(Node::Eof) => Err(ParseError::UnexpectedEOF(text_span, String::from(""))),
-            Ok(Node::Delimiter(ts)) => Err(ParseError::UnexpectedDelimiter(ts, String::from(""))),
+            Ok(Node::Delimiter(ts)) => Err(ParseError::UnexpectedDelimiter(*ts, String::from(""))),
             Ok(node) => Ok(Node::list(
+                arena,
                 text_span,
-                vec![Node::symbol(text_span, None, symbol), node],
+                vec![
+                    in arena;
+                    Node::symbol(arena, text_span, None, symbol) as &_,
+                    node
+                ],
             )),
             e => e,
         }
     }
 
-    pub fn read_fn(&mut self, text_span: TextSpan) -> Result<Node, ParseError> {
+    pub fn read_fn(
+        &mut self,
+        arena: &'a Bump,
+        text_span: TextSpan,
+    ) -> Result<&'a mut Node<'a>, ParseError> {
         let existing_expected_delimiter = self.expected_delimiter;
         self.expected_delimiter = Some(Token::CloseParen);
-        let list = match self.read_list(text_span) {
+        let list = match self.read_list(arena, text_span) {
             Ok((span, nodes)) => {
                 let mut nodes = nodes;
-                let mut fn_nodes = vec![Node::symbol(text_span, None, FN.to_string())];
+                let mut fn_nodes =
+                    vec![in arena; Node::symbol(arena, text_span, None, FN.to_string()) as &_];
                 fn_nodes.append(&mut nodes);
-                Ok(Node::list(span, fn_nodes))
+                Ok(Node::list(arena, span, fn_nodes))
             }
             Err(e) => Err(e),
         };
@@ -562,8 +627,12 @@ impl<'source> Cursor<'source> {
     //      (vary-meta next assoc :splint/disable (seq (:splint/disable uneval)))
     //      :else
     //      next))
-    pub fn read_discard(&mut self, text_span: TextSpan) -> Result<Node, ParseError> {
-        match (self.next_node(), self.next_node()) {
+    pub fn read_discard(
+        &mut self,
+        arena: &'a Bump,
+        text_span: TextSpan,
+    ) -> Result<&'a mut Node<'a>, ParseError> {
+        match (self.next_node(arena), self.next_node(arena)) {
             (Err(e), _) | (_, Err(e)) => Err(e),
             (Ok(Node::Eof), _) | (_, Ok(Node::Eof)) => {
                 Err(ParseError::UnexpectedEOF(text_span, String::from("#_")))
@@ -590,61 +659,69 @@ impl<'source> Cursor<'source> {
         }
     }
 
-    pub fn next_node(&mut self) -> Result<Node, ParseError> {
-        if let Some((token, text_span)) = self.pop() {
+    pub fn next_node(&mut self, arena: &'a Bump) -> Result<&'a mut Node<'a>, ParseError> {
+        let x = { self.pop() };
+        if let Some((token, text_span)) = x {
             return match token {
-                Token::Nil => Ok(Node::nil(text_span)),
-                Token::Boolean(b) => Ok(Node::boolean(text_span, b)),
-                Token::Char(c) => Ok(Node::char(text_span, c)),
-                Token::Integer(i) => Ok(Node::integer(text_span, i.parse::<_>().unwrap_or(0))),
+                Token::Nil => Ok(Node::nil(arena, text_span)),
+                Token::Boolean(b) => Ok(Node::boolean(arena, text_span, b)),
+                Token::Char(c) => Ok(Node::char(arena, text_span, c)),
+                Token::Integer(i) => {
+                    Ok(Node::integer(arena, text_span, i.parse::<_>().unwrap_or(0)))
+                }
                 Token::Ratio(i) => {
                     let i = i.to_string();
-                    self.read_ratio(i, text_span)
+                    self.read_ratio(arena, i, text_span)
                 }
-                Token::Decimal(f) => Ok(Node::decimal(text_span, f)),
-                Token::String(s) => Ok(Node::string(text_span, (*s).to_string())),
+                Token::Decimal(f) => Ok(Node::decimal(arena, text_span, f)),
+                Token::String(s) => Ok(Node::string(arena, text_span, (*s).to_string())),
                 Token::Symbol(s) => {
                     let s = s.to_string();
-                    self.read_symbol(s, text_span)
+                    self.read_symbol(arena, s, text_span)
                 }
                 Token::Keyword(s) => {
                     let s = s.to_string();
-                    self.read_symbol(s, text_span)
+                    self.read_symbol(arena, s, text_span)
                 }
                 Token::FnArg(s) => {
                     let s = s.to_string();
-                    self.read_symbol(s, text_span)
+                    self.read_symbol(arena, s, text_span)
                 }
-                Token::Meta => self.read_meta(text_span),
-                Token::Discard => self.read_discard(text_span),
+                Token::Meta => self.read_meta(arena, text_span),
+                Token::Discard => self.read_discard(arena, text_span),
                 Token::ReaderConditional => todo!(),
                 Token::TaggedLiteral(_) => todo!(),
                 Token::NamespacedMap => todo!(),
-                Token::Eval => self.read_wrapper(text_span, EVAL.to_string()),
-                Token::Deref => self.read_wrapper(text_span, DEREF.to_string()),
-                Token::Quote => self.read_wrapper(text_span, QUOTE.to_string()),
-                Token::SyntaxQuote => self.read_wrapper(text_span, SYNTAX_QUOTE.to_string()),
-                Token::Unquote => self.read_wrapper(text_span, UNQUOTE.to_string()),
+                Token::Eval => self.read_wrapper(arena, text_span, EVAL.to_string()),
+                Token::Deref => self.read_wrapper(arena, text_span, DEREF.to_string()),
+                Token::Quote => self.read_wrapper(arena, text_span, QUOTE.to_string()),
+                Token::SyntaxQuote => self.read_wrapper(arena, text_span, SYNTAX_QUOTE.to_string()),
+                Token::Unquote => self.read_wrapper(arena, text_span, UNQUOTE.to_string()),
                 Token::UnquoteSplicing => {
-                    self.read_wrapper(text_span, UNQUOTE_SPLICING.to_string())
+                    self.read_wrapper(arena, text_span, UNQUOTE_SPLICING.to_string())
                 }
-                Token::Var => self.read_wrapper(text_span, VAR.to_string()),
+                Token::Var => self.read_wrapper(arena, text_span, VAR.to_string()),
                 Token::Regex(re) => {
-                    let node = Node::Regex(Regex {
+                    let node = arena.alloc(Node::Regex(arena.alloc(Regex {
                         span: text_span,
                         meta: None,
                         value: re.to_string(),
-                    });
+                    })));
                     Ok(Node::list(
+                        arena,
                         text_span,
-                        vec![Node::symbol(text_span, None, RE_PATTERN.to_string()), node],
+                        vec![
+                            in arena;
+                            Node::symbol(arena, text_span, None, RE_PATTERN.to_string()) as &_,
+                            node
+                        ],
                     ))
                 }
                 Token::OpenParen => {
                     let existing_expected_delimiter = self.expected_delimiter;
                     self.expected_delimiter = Some(Token::CloseParen);
-                    let list = match self.read_list(text_span) {
-                        Ok((span, nodes)) => Ok(Node::list(span, nodes)),
+                    let list = match self.read_list(arena, text_span) {
+                        Ok((span, nodes)) => Ok(Node::list(arena, span, nodes)),
                         Err(e) => Err(e),
                     };
                     self.expected_delimiter = existing_expected_delimiter;
@@ -652,7 +729,7 @@ impl<'source> Cursor<'source> {
                 }
                 Token::CloseParen => {
                     let ret = match self.expected_delimiter {
-                        Some(Token::CloseParen) => Ok(Node::Delimiter(text_span)),
+                        Some(Token::CloseParen) => Ok(arena.alloc(Node::Delimiter(text_span))),
                         _ => Err(ParseError::UnexpectedDelimiter(
                             text_span,
                             String::from(")"),
@@ -661,12 +738,12 @@ impl<'source> Cursor<'source> {
                     self.expected_delimiter = None;
                     ret
                 }
-                Token::Fn => self.read_fn(text_span),
+                Token::Fn => self.read_fn(arena, text_span),
                 Token::OpenCurly => {
                     let existing_expected_delimiter = self.expected_delimiter;
                     self.expected_delimiter = Some(Token::CloseCurly);
-                    let map = match self.read_list(text_span) {
-                        Ok((span, nodes)) => Ok(Node::map(span, nodes)),
+                    let map = match self.read_list(arena, text_span) {
+                        Ok((span, nodes)) => Ok(Node::map(arena, span, nodes)),
                         Err(e) => Err(e),
                     };
                     self.expected_delimiter = existing_expected_delimiter;
@@ -674,7 +751,7 @@ impl<'source> Cursor<'source> {
                 }
                 Token::CloseCurly => {
                     let ret = match self.expected_delimiter {
-                        Some(Token::CloseCurly) => Ok(Node::Delimiter(text_span)),
+                        Some(Token::CloseCurly) => Ok(arena.alloc(Node::Delimiter(text_span))),
                         _ => Err(ParseError::UnexpectedDelimiter(
                             text_span,
                             String::from("}"),
@@ -686,8 +763,8 @@ impl<'source> Cursor<'source> {
                 Token::Set => {
                     let existing_expected_delimiter = self.expected_delimiter;
                     self.expected_delimiter = Some(Token::CloseCurly);
-                    let map = match self.read_list(text_span) {
-                        Ok((span, nodes)) => Ok(Node::set(span, nodes)),
+                    let map = match self.read_list(arena, text_span) {
+                        Ok((span, nodes)) => Ok(Node::set(arena, span, nodes)),
                         Err(e) => Err(e),
                     };
                     self.expected_delimiter = existing_expected_delimiter;
@@ -696,8 +773,8 @@ impl<'source> Cursor<'source> {
                 Token::OpenSquare => {
                     let existing_expected_delimiter = self.expected_delimiter;
                     self.expected_delimiter = Some(Token::CloseSquare);
-                    let map = match self.read_list(text_span) {
-                        Ok((span, nodes)) => Ok(Node::map(span, nodes)),
+                    let map = match self.read_list(arena, text_span) {
+                        Ok((span, nodes)) => Ok(Node::map(arena, span, nodes)),
                         Err(e) => Err(e),
                     };
                     self.expected_delimiter = existing_expected_delimiter;
@@ -705,7 +782,7 @@ impl<'source> Cursor<'source> {
                 }
                 Token::CloseSquare => {
                     let ret = match self.expected_delimiter {
-                        Some(Token::CloseSquare) => Ok(Node::Delimiter(text_span)),
+                        Some(Token::CloseSquare) => Ok(arena.alloc(Node::Delimiter(text_span))),
                         _ => Err(ParseError::UnexpectedDelimiter(
                             text_span,
                             String::from("]"),
@@ -720,15 +797,18 @@ impl<'source> Cursor<'source> {
                 // token => Err(ParseError::InvalidToken(text_span, token.to_string())),
             };
         }
-        Ok(Node::Eof)
+        Ok(arena.alloc(Node::Eof))
     }
 }
 
-pub fn parse(input: Vec<TokenSpan>) -> Result<Vec<Node>, ParseError> {
+pub fn parse<'a>(
+    input: Vec<'a, TokenSpan<'_>>,
+    arena: &'a Bump,
+) -> Result<Vec<'a, &'a mut Node<'a>>, ParseError> {
     let mut cursor = Cursor::new(input);
-    let mut ret = vec![];
+    let mut ret = Vec::new_in(arena);
     loop {
-        match cursor.next_node() {
+        match cursor.next_node(arena) {
             Ok(Node::Eof) => break,
             Ok(node) => ret.push(node),
             Err(e) => return Err(e),
