@@ -571,7 +571,7 @@ impl<'source> Cursor<'source> {
             (Ok(Node::Delimiter(_)), _) | (_, Ok(Node::Delimiter(_))) => Err(
                 ParseError::UnexpectedDelimiter(text_span, String::from("#_")),
             ),
-            (Ok(discard), Ok(mut next)) => {
+            (Ok(_discard), Ok(mut _next)) => {
                 todo!()
                 // if let Node::Keyword(k) = discard {
                 //     if k == (Keyword {

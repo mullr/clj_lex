@@ -14,8 +14,8 @@ use logos::Logos;
 use std::{error::Error, fs};
 
 use hand::{parse, TokenSpan};
+pub use hand::{Node, ParseError};
 use lexer::Token;
-pub use hand::{ParseError, Node};
 
 pub fn parse_clj(source: &str) -> Result<Vec<Node>, ParseError> {
     let tokens = Token::lexer(source)
